@@ -24,7 +24,7 @@ pub fn EventBus(comptime Events: type) type {
                 listener.callback = callback;
                 listener.eventBus = eventBus;
                 
-                return @ptrCast(@alignCast(listener));
+                return @ptrCast(listener);
             }
             
             pub fn destroy(self: *@This()) void {
@@ -128,61 +128,80 @@ pub fn EventBus(comptime Events: type) type {
 }
 
 pub const Image: type = opaque {
-    pub const Metadata: type = struct {
-        size: [2]usize
+    const Format: type = enum {
+        Png
+    };
+    
+    const Metadata: type = struct {
+        dimensions: [2]u32,
+        format: Format,
+        size: usize,
+        bitsPerChannel: u8,
+        resolution: u32,
+        tags: [][]const u8
     };
     
     const Pixel: type = [4]u8;
     
     const Implementation: type = struct {
         allocator: std.mem.Allocator,
-        metadata: Metadata,
-        pixels: std.ArrayList(Pixel)
+        pixels: []const Pixel,
+        metadata: Metadata
     };
     
-    pub const Iterator: type = opaque {
-        const IteratorImplementation: type = struct {
-            allocator: std.mem.Allocator,
-            pixels: []const Pixel
+    fn decodePng(imageContents: []const u8,output: struct {pixels: *[]const Pixel,metadata: *Metadata}) void {
+        _ = imageContents;
+        _ = output;
+    }
+    
+    pub fn createFromFile(allocator: std.mem.Allocator,path: []const u8) !*@This() {
+        const image: *Implementation = allocator.create(Implementation) catch unreachable;
+        
+        image.allocator = allocator;
+        
+        {
+            const extension: []const u8 = std.fs.path.extension(path)[1..];
+            
+            const formatFields: []const std.builtin.Type.EnumField = @typeInfo(Format).@"enum".fields;
+            var formatAssigned: bool = false;
+            
+            inline for (formatFields) |field| {
+                var lowercaseFieldNameBuffer: [32]u8 = undefined;
+                const lowercaseFieldName = std.ascii.lowerString(&lowercaseFieldNameBuffer,field.name);
+                
+                if (std.mem.eql(u8,lowercaseFieldName,extension)) {
+                    image.metadata.format = @enumFromInt(field.value);
+                    formatAssigned = true;
+                    break;
+                }
+            }
+            
+            if (!formatAssigned) {
+                @panic("Format unsupported");
+            }
+        }
+        
+        const imageContents: []u8 = getValue: {
+            const selfDirectory: std.fs.Dir = try fileSystem.openSelfDirectory(.{});
+            const file: std.fs.File = try selfDirectory.openFile(path,.{
+                .mode = .read_only
+            });
+            
+            const fileStat: std.fs.File.Stat = try file.stat();
+            
+            var fileReaderBuffer: [256]u8 = undefined;
+            break :getValue try std.Io.Reader.readAlloc(@constCast(&file.reader(&fileReaderBuffer).interface),image.allocator,fileStat.size);
         };
+        defer image.allocator.free(imageContents);
         
-        pub fn create(allocator: std.mem.Allocator,pixels: []Pixel) *@This() {
-            const iterator: *IteratorImplementation = allocator.create(IteratorImplementation) catch unreachable;
-            
-            iterator.allocator = allocator;
-            iterator.pixels = pixels;
-            
-            return @ptrCast(iterator);
+        switch (image.metadata.format) {
+            .Png => decodePng(imageContents,.{
+                .pixels = &image.pixels,
+                .metadata = &image.metadata
+            })
         }
         
-        pub fn destroy(self: *@This()) void {
-            const iterator: *IteratorImplementation = @ptrCast(@alignCast(self));
-            
-            iterator.allocator.destroy(iterator);
-        }
-        
-        pub fn next(self: *@This()) ?Pixel {
-            const iterator: *IteratorImplementation = @ptrCast(@alignCast(self));
-            
-            _ = iterator; return null;
-        }
-    };
-    
-    pub fn createFromFile(allocator: std.mem.Allocator,path: []const u8) std.fs.File.OpenError!*@This() {
-        const listener: *Implementation = allocator.create(Implementation) catch unreachable;
-        
-        listener.allocator = allocator;
-        
-        listener.pixels = .empty;
-        
-        listener.pixels.appendSlice(listener.allocator,&.{
-            .{200,100,255,255},
-            .{255,150,255,255}
-        }) catch unreachable;
-        
-        _ = path;
-        
-        return @ptrCast(listener);
+        return @ptrCast(image);
     }
     
     pub fn destroy(self: *@This()) void {
@@ -192,10 +211,10 @@ pub const Image: type = opaque {
         image.allocator.destroy(image);
     }
     
-    pub fn iterate(self: *@This()) *Iterator {
+    pub fn getPixels(self: *@This()) []const Pixel {
         const image: *Implementation = @ptrCast(@alignCast(self));
         
-        return .create(image.allocator,image.pixels.items);
+        return image.pixels;
     }
     
     pub fn getMetadata(self: *@This()) Metadata {
