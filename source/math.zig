@@ -1,5 +1,15 @@
 const std: type = @import("std");
 
+pub fn average(comptime T: type, values: []const T) T {
+    var sum: i128 = 0; // or u64/i64 depending on expected input
+
+    for (values) |v| {
+        sum += @as(i128, v);
+    }
+
+    return @as(T, @intCast(@divFloor(sum,@as(i128, values.len))));
+}
+
 pub fn Matrix(comptime width: usize, comptime height: usize) type {
     if (width < 2 or height < 2 or width > 4 or height > 4) @panic("Only matrices 2x2..4x4 are allowed");
 

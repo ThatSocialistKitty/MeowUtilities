@@ -5,7 +5,8 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "source"
+        "source",
+        "dependencies"
     },
     .fingerprint = 0x5a56028e3088710
 }
