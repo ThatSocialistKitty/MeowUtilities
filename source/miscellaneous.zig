@@ -4,63 +4,47 @@ const zlib: type = @cImport({
     @cInclude("zlib-ng.h");
 });
 
-pub fn EventBus(comptime Events: type) type {
-    if (std.meta.activeTag(@typeInfo(Events)) != .@"struct") @panic("Events must a struct of functions");
+pub fn EventBus(comptime EventUnion: type) type {
+    std.debug.assert(std.meta.activeTag(@typeInfo(EventUnion)) == .@"union");
     
-    const Event: type = std.meta.DeclEnum(Events);
-    const eventCallbacks: []const std.builtin.Type.Declaration = @typeInfo(Events).@"struct".decls;
-    
-    return opaque {
-        const Listener: type = opaque {
-            const ListenerImplementation: type = struct {
-                allocator: std.mem.Allocator,
-                id: usize,
-                callback: *const anyopaque,
-                eventBus: *EventBus(Events)
-            };
-            
-            fn create(allocator: std.mem.Allocator,id: usize,callback: *const anyopaque,eventBus: *EventBus(Events)) *@This() {
-                const listener: *ListenerImplementation = allocator.create(ListenerImplementation) catch unreachable;
-                
-                listener.allocator = allocator;
-                listener.id = id;
-                listener.callback = callback;
-                listener.eventBus = eventBus;
-                
-                return @ptrCast(listener);
-            }
-            
+    return struct {
+        pub const Event: type = struct {
+            preventDefault: bool = false,
+            data: EventUnion
+        };
+        
+        const ConsumerImplementation: type = struct {
+            id: usize,
+            pollingIndex: usize,
+            eventBus: *EventBus(EventUnion)
+        };
+        
+        pub const Consumer: type = opaque {
             pub fn destroy(self: *@This()) void {
-                const listener: *ListenerImplementation = @ptrCast(@alignCast(self));
-                
-                unlisten(listener.eventBus,listener.id);
-                
-                listener.allocator.destroy(listener);
+                const consumer: *ConsumerImplementation = @ptrCast(@alignCast(self));
+                consumer.eventBus.destroyConsumer(consumer);
             }
             
-            fn getImplementation(self: *@This()) *ListenerImplementation {
-                const listener: *ListenerImplementation = @ptrCast(@alignCast(self));
-                
-                return listener;
+            pub fn poll(self: *@This()) ?*Event {
+                const consumer: *ConsumerImplementation = @ptrCast(@alignCast(self));
+                return consumer.eventBus.pollConsumer(consumer);
             }
         };
         
         const Implementation: type = struct {
             allocator: std.mem.Allocator,
-            listeners: [eventCallbacks.len]std.ArrayList(*Listener),
-            nextListenerId: usize
+            events: std.ArrayList(Event),
+            consumers: std.ArrayList(*ConsumerImplementation),
+            nextConsumerId: usize
         };
         
         pub fn create(allocator: std.mem.Allocator) *@This() {
             const eventBus: *Implementation = allocator.create(Implementation) catch unreachable;
             
             eventBus.allocator = allocator;
-            
-            inline for (0..eventCallbacks.len) |index| {
-                eventBus.listeners[index] = .empty;
-            }
-            
-            eventBus.nextListenerId = 0;
+            eventBus.events = .empty;
+            eventBus.consumers = .empty;
+            eventBus.nextConsumerId = 0;
             
             return @ptrCast(eventBus);
         }
@@ -68,64 +52,81 @@ pub fn EventBus(comptime Events: type) type {
         pub fn destroy(self: *@This()) void {
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
             
-            inline for (0..eventCallbacks.len) |index| {
-                const listeners: *std.ArrayList(*Listener) = &eventBus.listeners[index];
-                
-                for (listeners.items) |listener| {
-                    listener.destroy();
-                }
-                
-                listeners.deinit(eventBus.allocator);
+            eventBus.events.deinit(eventBus.allocator);
+            
+            while (eventBus.consumers.items.len > 0) {
+                self.destroyConsumer(eventBus.consumers.items[0]);
             }
+            
+            eventBus.consumers.deinit(eventBus.allocator);
             
             eventBus.allocator.destroy(eventBus);
         }
         
-        pub fn listen(self: *@This(),event: Event,callback: anytype) *Listener {
+        pub fn createConsumer(self: *@This()) *Consumer { 
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            const eventEnumIndex: usize = @intFromEnum(event);
             
-            const listener: *Listener = .create(eventBus.allocator,eventBus.nextListenerId,@ptrCast(&callback),self);
+            const consumer: *ConsumerImplementation = eventBus.allocator.create(ConsumerImplementation) catch unreachable;
             
-            eventBus.nextListenerId += 1;
+            consumer.id = eventBus.nextConsumerId;
+            consumer.pollingIndex = 0;
+            consumer.eventBus = self;
             
-            eventBus.listeners[eventEnumIndex].append(eventBus.allocator,listener) catch unreachable;
+            eventBus.nextConsumerId += 1;
             
-            return listener;
+            eventBus.consumers.append(eventBus.allocator,consumer) catch unreachable;
+            
+            return @ptrCast(consumer);
         }
         
-        fn unlisten(self: *@This(),id: usize) void {
+        fn pollConsumer(self: *@This(),consumer: *ConsumerImplementation) ?*Event {
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
             
-            inline for (0..eventCallbacks.len) |index| {
-                var listeners: *std.ArrayList(*Listener) = &eventBus.listeners[index];
+            var smallestPollingIndex: usize = std.math.maxInt(usize);
+            
+            for (eventBus.consumers.items) |otherConsumerLol| {
+                if (otherConsumerLol.pollingIndex < smallestPollingIndex) {
+                    smallestPollingIndex = otherConsumerLol.pollingIndex;
+                }
+            }
+            
+            if (smallestPollingIndex > 1) {
+                const removeCount: usize = smallestPollingIndex - 1;
                 
-                for (listeners.items,0..) |listener,index2| {
-                    if (listener.getImplementation().id == id) {
-                        _ = listeners.swapRemove(index2);
-                        break;
-                    }
+                var index: usize = 0;
+                
+                while (index < removeCount and eventBus.events.items.len > 0) : (index += 1) {
+                    _ = eventBus.events.orderedRemove(0);
+                }
+                
+                for (eventBus.consumers.items) |otherConsumerLol| {
+                    otherConsumerLol.pollingIndex -= removeCount;
+                }
+            }
+            
+            const event: ?*Event = if (consumer.pollingIndex < eventBus.events.items.len) &eventBus.events.items[consumer.pollingIndex] else null;
+            
+            if (event != null) {
+                consumer.pollingIndex += 1;
+            }
+            
+            return event;
+        }
+        
+        fn destroyConsumer(self: *@This(),consumer: *ConsumerImplementation) void {
+            const eventBus: *Implementation = @ptrCast(@alignCast(self));
+            
+            for (eventBus.consumers.items,0..) |otherConsumerLol,index| {
+                if (otherConsumerLol == consumer) {
+                    eventBus.allocator.destroy(eventBus.consumers.orderedRemove(index));
+                    break;
                 }
             }
         }
         
-        pub fn emit(self: *@This(),comptime event: Event,arguments: anytype) void {
+        pub fn append(self: *@This(),event: Event) void {
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            const eventEnumIndex: usize = @intFromEnum(event);
-            
-            const defaultCallback = @field(Events,eventCallbacks[eventEnumIndex].name);
-            
-            const CallbackType = *const @TypeOf(defaultCallback);
-            
-            const listeners: *std.ArrayList(*Listener) = &eventBus.listeners[eventEnumIndex];
-            
-            if (listeners.items.len > 0) {
-                for (listeners.items) |listener| {
-                    @call(.auto,@as(CallbackType,@ptrCast(listener.getImplementation().callback)),arguments);
-                }
-            } else {
-                @call(.auto,@as(CallbackType,@ptrCast(&defaultCallback)),arguments);
-            }
+            eventBus.events.append(eventBus.allocator,event) catch unreachable;
         }
     };
 }
@@ -184,33 +185,31 @@ pub const Image: type = opaque {
         var channelCount: u8 = undefined;
         var bitDepth: u8 = undefined;
         var pixelSize: u8 = undefined;
-        var imageWidth: usize = undefined;
-        var imageHeight: usize = undefined;
         
         {
             var byteIndex: usize = 8;
-            const fieldLength: usize = 4;
+            const fieldSize: usize = 4;
             
             while (true) {
                 var chunk = std.mem.zeroes(Chunk);
                 
-                chunk.dataLength = std.mem.readPackedInt(u32,imageContents[byteIndex..byteIndex + fieldLength],0,.big);
+                chunk.dataLength = std.mem.readPackedInt(u32,imageContents[byteIndex..byteIndex + fieldSize],0,.big);
                 
-                byteIndex += fieldLength;
+                byteIndex += fieldSize;
                 
-                const typeField: []const u8 = imageContents[byteIndex..byteIndex + fieldLength];
+                const typeField: []const u8 = imageContents[byteIndex..byteIndex + fieldSize];
                 
                 var chunkIsRelevant: bool = false;
                 
                 inline for (@typeInfo(ChunkKind).@"enum".fields,0..) |field,fieldIndex| {
-                    if (std.mem.eql(u8,imageContents[byteIndex..byteIndex + fieldLength],field.name)) {
+                    if (std.mem.eql(u8,imageContents[byteIndex..byteIndex + fieldSize],field.name)) {
                         chunk.kind = @enumFromInt(fieldIndex);
                         chunkIsRelevant = true;
                         break;
                     }
                 }
                 
-                byteIndex += fieldLength;
+                byteIndex += fieldSize;
                 
                 const dataField: []const u8 = imageContents[byteIndex..byteIndex + chunk.dataLength];
                 
@@ -218,9 +217,9 @@ pub const Image: type = opaque {
                 
                 byteIndex += chunk.dataLength;
                 
-                chunk.checksum = std.mem.readPackedInt(u32,imageContents[byteIndex..byteIndex + fieldLength],0,.big);
+                chunk.checksum = std.mem.readPackedInt(u32,imageContents[byteIndex..byteIndex + fieldSize],0,.big);
                 
-                byteIndex += fieldLength;
+                byteIndex += fieldSize;
                 
                 if (chunkIsRelevant) {
                     {
@@ -235,12 +234,12 @@ pub const Image: type = opaque {
                     switch (chunk.kind) {
                         .IHDR => {
                             output.metadata.dimensions = .{
-                                std.mem.readPackedInt(u32,chunk.data[0..fieldLength],0,.big),
-                                std.mem.readPackedInt(u32,chunk.data[fieldLength..fieldLength * 2],0,.big)
+                                std.mem.readPackedInt(u32,chunk.data[0..fieldSize],0,.big),
+                                std.mem.readPackedInt(u32,chunk.data[fieldSize..fieldSize * 2],0,.big)
                             };
                             
-                            imageWidth = output.metadata.dimensions[0];
-                            imageHeight = output.metadata.dimensions[1];
+                            output.metadata.dimensions[0] = output.metadata.dimensions[0];
+                            output.metadata.dimensions[1] = output.metadata.dimensions[1];
                             
                             output.metadata.resolution = output.metadata.dimensions[0] * output.metadata.dimensions[1];
                             
@@ -265,14 +264,14 @@ pub const Image: type = opaque {
         
         output.metadata.tags = tags.toOwnedSlice(allocator) catch unreachable;
         
-        const scanlines: []u8 = allocator.alloc(u8,((imageWidth * channelCount * bitDepth + 7) / 8 + 1) * imageHeight) catch unreachable;
+        const scanlines: []u8 = allocator.alloc(u8,((output.metadata.dimensions[0] * channelCount * bitDepth + 7) / 8 + 1) * output.metadata.dimensions[1]) catch unreachable;
         defer allocator.free(scanlines);
         
         var bytesWritten = scanlines.len;
         
         if (zlib.zng_uncompress(scanlines.ptr,&bytesWritten,compressedScanlines.items.ptr,compressedScanlines.items.len) != zlib.Z_OK) return error.DecompressionFailure;
         
-        output.pixels.* = allocator.alloc(Pixel,imageWidth * imageHeight) catch unreachable;
+        output.pixels.* = allocator.alloc(Pixel,output.metadata.dimensions[0] * output.metadata.dimensions[1]) catch unreachable;
         
         const FilterKind: type = enum {
             None,
@@ -282,7 +281,7 @@ pub const Image: type = opaque {
             Paeth
         };
         
-        const scanlineDataLength: usize = imageWidth * channelCount;
+        const scanlineDataLength: usize = output.metadata.dimensions[0] * channelCount;
         
         var buffer = try allocator.alloc(u8,scanlineDataLength * 2);
         defer allocator.free(buffer);
@@ -292,7 +291,7 @@ pub const Image: type = opaque {
         var unfilteredScanline = buffer[0..scanlineDataLength];
         const previousUnfilteredScanline = buffer[scanlineDataLength..scanlineDataLength * 2];
         
-        for (0..imageHeight) |y| {
+        for (0..output.metadata.dimensions[1]) |y| {
             const rowStartIndex: usize = y * (scanlineDataLength + 1);
             const filterType: FilterKind = @enumFromInt(scanlines[rowStartIndex]);
             const scanline: []u8 = scanlines[rowStartIndex + 1..rowStartIndex + 1 + scanlineDataLength];
@@ -304,7 +303,6 @@ pub const Image: type = opaque {
                 .Sub => {
                     for (0..scanlineDataLength) |index| {
                         const left: u8 = if (index >= pixelSize) unfilteredScanline[index - pixelSize] else 0;
-                        
                         unfilteredScanline[index] = scanline[index] +% left;
                     }
                 },
@@ -340,10 +338,10 @@ pub const Image: type = opaque {
                 }
             }
             
-            for (0..imageWidth) |x| {
+            for (0..output.metadata.dimensions[0]) |x| {
                 const scanlinePixelIndex: usize = x * channelCount;
                 
-                output.pixels.*[y * imageWidth + x] = .{
+                output.pixels.*[y * output.metadata.dimensions[0] + x] = .{
                     .red = unfilteredScanline[scanlinePixelIndex],
                     .green = unfilteredScanline[scanlinePixelIndex + 1],
                     .blue = unfilteredScanline[scanlinePixelIndex + 2],
@@ -419,13 +417,11 @@ pub const Image: type = opaque {
     
     pub fn getPixels(self: *@This()) []const Pixel {
         const image: *Implementation = @ptrCast(@alignCast(self));
-        
         return image.pixels;
     }
     
     pub fn getMetadata(self: *@This()) Metadata {
         const image: *Implementation = @ptrCast(@alignCast(self));
-        
         return image.metadata;
     }
 };
