@@ -10,6 +10,25 @@ pub fn average(comptime T: type, values: []const T) T {
     return @as(T, @intCast(@divFloor(sum,@as(i128, values.len))));
 }
 
+pub fn min(comptime T: type,values: []const T) T {
+    std.debug.assert(switch (@typeInfo(T)) {
+        .int, .float, .comptime_int, .comptime_float => true,
+        else => false
+    });
+    
+    std.debug.assert(values.len > 0);
+    
+    var smallest: T = std.math.maxInt(T);
+    
+    for (values) |number| {
+        if (number < smallest) {
+            smallest = number;
+        }
+    }
+    
+    return smallest;
+}
+
 pub fn Matrix(comptime width: usize, comptime height: usize) type {
     if (width < 2 or height < 2 or width > 4 or height > 4) @panic("Only matrices 2x2..4x4 are allowed");
 
@@ -24,7 +43,7 @@ pub fn Matrix(comptime width: usize, comptime height: usize) type {
             return self;
         }
 
-        const Axis: type = enum { x, y, z };
+        const Axis: type = enum { X, Y, Z };
 
         // ---------------- Column-major multiplication ----------------
         pub fn multiply(self: @This(), operand: @This()) @This() {
@@ -69,9 +88,9 @@ pub fn Matrix(comptime width: usize, comptime height: usize) type {
             }
 
             switch (axis) {
-                .x => { R[1 + 1*4] = c; R[2 + 1*4] = -s; R[1 + 2*4] = s; R[2 + 2*4] = c; },
-                .y => { R[0 + 0*4] = c; R[2 + 0*4] = s; R[0 + 2*4] = -s; R[2 + 2*4] = c; },
-                .z => { R[0 + 0*4] = c; R[1 + 0*4] = s; R[0 + 1*4] = -s; R[1 + 1*4] = c; }
+                .X => { R[1 + 1*4] = c; R[2 + 1*4] = -s; R[1 + 2*4] = s; R[2 + 2*4] = c; },
+                .Y => { R[0 + 0*4] = c; R[2 + 0*4] = s; R[0 + 2*4] = -s; R[2 + 2*4] = c; },
+                .Z => { R[0 + 0*4] = c; R[1 + 0*4] = s; R[0 + 1*4] = -s; R[1 + 1*4] = c; }
             }
 
             result = result.multiply(.{ .data = R });

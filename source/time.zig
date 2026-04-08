@@ -6,6 +6,16 @@ const time: type = @cImport({
 pub const Timestamp: type = i64;
 pub const FormattedTimestampBuffer: type = [32]u8;
 
+pub const DayName: type = enum {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday
+};
+
 pub const MonthName: type = enum {
     January,
     February,
@@ -21,16 +31,6 @@ pub const MonthName: type = enum {
     December
 };
 
-pub const DayName: type = enum {
-    Sunday,
-    Monday,
-    Tuesday,
-    Wednesday,
-    Thursday,
-    Friday,
-    Saturday
-};
-
 pub const DatetimeComponents: type = struct {
     year: i16,
     month: u8,
@@ -39,8 +39,8 @@ pub const DatetimeComponents: type = struct {
     minute: u8,
     second: u8,
     millisecond: u16,
-    monthName: MonthName,
-    dayName: DayName
+    dayName: DayName,
+    monthName: MonthName
 };
 
 fn isLeapYear(year: i16) bool {

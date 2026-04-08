@@ -131,7 +131,7 @@ pub fn EventBus(comptime EventUnion: type) type {
     };
 }
 
-pub const Image: type = opaque {
+pub const Image: type = struct {
     const Format: type = enum {
         Png
     };
@@ -140,12 +140,12 @@ pub const Image: type = opaque {
         &.{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}
     };
     
-    const Metadata: type = struct {
+    pub const Metadata: type = struct {
         format: Format,
         dimensions: [2]u32,
         resolution: u32,
         size: usize,
-        tags: ?[]const []const u8 = null
+        tags: ?[]const []const u8
     };
     
     const Pixel: type = struct {
@@ -252,7 +252,7 @@ pub const Image: type = opaque {
                             bitDepth = chunk.data[8];
                             pixelSize = channelCount * (bitDepth / 8);
                             
-                            output.metadata.size = bitDepth * channelCount * output.metadata.resolution / 8;
+                            output.metadata.size = (bitDepth / 8) * 4 * output.metadata.resolution;
                         },
                         .IDAT => compressedScanlines.appendSlice(allocator,chunk.data) catch unreachable,
                         .tEXt => tags.append(allocator,allocator.dupe(u8,chunk.data) catch unreachable) catch unreachable,
@@ -262,7 +262,9 @@ pub const Image: type = opaque {
             }
         }
         
-        output.metadata.tags = tags.toOwnedSlice(allocator) catch unreachable;
+        if (tags.items.len > 0) {
+            output.metadata.tags = tags.toOwnedSlice(allocator) catch unreachable;
+        }
         
         const scanlines: []u8 = allocator.alloc(u8,((output.metadata.dimensions[0] * channelCount * bitDepth + 7) / 8 + 1) * output.metadata.dimensions[1]) catch unreachable;
         defer allocator.free(scanlines);
@@ -374,6 +376,8 @@ pub const Image: type = opaque {
             }
         }
         
+        image.metadata.tags = null;
+        
         switch (image.metadata.format) {
             .Png => try decodePng(allocator,imageContents,.{
                 .pixels = &image.pixels,
@@ -391,10 +395,8 @@ pub const Image: type = opaque {
                 .mode = .read_only
             });
             
-            const fileStat: std.fs.File.Stat = try file.stat();
-            
             var fileReaderBuffer: [256]u8 = undefined;
-            break :getValue try std.Io.Reader.readAlloc(@constCast(&file.reader(&fileReaderBuffer).interface),allocator,fileStat.size);
+            break :getValue try std.Io.Reader.readAlloc(@constCast(&file.reader(&fileReaderBuffer).interface),allocator,(try file.stat()).size);
         };
         defer allocator.free(imageContents);
         
@@ -406,11 +408,13 @@ pub const Image: type = opaque {
         
         image.allocator.free(image.pixels);
         
-        for (image.metadata.tags) |tag| {
-            image.allocator.free(tag);
+        if (image.metadata.tags != null) {
+            for (image.metadata.tags.?) |tag| {
+                image.allocator.free(tag);
+            }
+            
+            image.allocator.free(image.metadata.tags.?);
         }
-        
-        image.allocator.free(image.metadata.tags);
         
         image.allocator.destroy(image);
     }
