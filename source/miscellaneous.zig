@@ -4,38 +4,19 @@ const zlib: type = @cImport({
     @cInclude("zlib-ng.h");
 });
 
-pub fn EventBus(comptime EventUnion: type) type {
-    std.debug.assert(std.meta.activeTag(@typeInfo(EventUnion)) == .@"union");
+pub fn EventBus(comptime EventData: type) type {
+    std.debug.assert(std.meta.activeTag(@typeInfo(EventData)) == .@"union");
     
     return struct {
         pub const Event: type = struct {
-            preventDefault: bool = false,
-            data: EventUnion
-        };
-        
-        const ConsumerImplementation: type = struct {
-            id: usize,
-            pollingIndex: usize,
-            eventBus: *EventBus(EventUnion)
-        };
-        
-        pub const Consumer: type = opaque {
-            pub fn destroy(self: *@This()) void {
-                const consumer: *ConsumerImplementation = @ptrCast(@alignCast(self));
-                consumer.eventBus.destroyConsumer(consumer);
-            }
-            
-            pub fn poll(self: *@This()) ?*Event {
-                const consumer: *ConsumerImplementation = @ptrCast(@alignCast(self));
-                return consumer.eventBus.pollConsumer(consumer);
-            }
+            consume: bool = false,
+            data: EventData
         };
         
         const Implementation: type = struct {
             allocator: std.mem.Allocator,
             events: std.ArrayList(Event),
-            consumers: std.ArrayList(*ConsumerImplementation),
-            nextConsumerId: usize
+            pollingIndex: usize
         };
         
         pub fn create(allocator: std.mem.Allocator) *@This() {
@@ -43,8 +24,7 @@ pub fn EventBus(comptime EventUnion: type) type {
             
             eventBus.allocator = allocator;
             eventBus.events = .empty;
-            eventBus.consumers = .empty;
-            eventBus.nextConsumerId = 0;
+            eventBus.pollingIndex = 0;
             
             return @ptrCast(eventBus);
         }
@@ -53,80 +33,37 @@ pub fn EventBus(comptime EventUnion: type) type {
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
             
             eventBus.events.deinit(eventBus.allocator);
-            
-            while (eventBus.consumers.items.len > 0) {
-                self.destroyConsumer(eventBus.consumers.items[0]);
-            }
-            
-            eventBus.consumers.deinit(eventBus.allocator);
-            
             eventBus.allocator.destroy(eventBus);
         }
         
-        pub fn createConsumer(self: *@This()) *Consumer { 
+        pub fn poll(self: *@This()) ?*Event {
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
             
-            const consumer: *ConsumerImplementation = eventBus.allocator.create(ConsumerImplementation) catch unreachable;
-            
-            consumer.id = eventBus.nextConsumerId;
-            consumer.pollingIndex = 0;
-            consumer.eventBus = self;
-            
-            eventBus.nextConsumerId += 1;
-            
-            eventBus.consumers.append(eventBus.allocator,consumer) catch unreachable;
-            
-            return @ptrCast(consumer);
-        }
-        
-        fn pollConsumer(self: *@This(),consumer: *ConsumerImplementation) ?*Event {
-            const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            
-            var smallestPollingIndex: usize = std.math.maxInt(usize);
-            
-            for (eventBus.consumers.items) |otherConsumerLol| {
-                if (otherConsumerLol.pollingIndex < smallestPollingIndex) {
-                    smallestPollingIndex = otherConsumerLol.pollingIndex;
-                }
-            }
-            
-            if (smallestPollingIndex > 1) {
-                const removeCount: usize = smallestPollingIndex - 1;
-                
-                var index: usize = 0;
-                
-                while (index < removeCount and eventBus.events.items.len > 0) : (index += 1) {
-                    _ = eventBus.events.orderedRemove(0);
-                }
-                
-                for (eventBus.consumers.items) |otherConsumerLol| {
-                    otherConsumerLol.pollingIndex -= removeCount;
-                }
-            }
-            
-            const event: ?*Event = if (consumer.pollingIndex < eventBus.events.items.len) &eventBus.events.items[consumer.pollingIndex] else null;
+            const event: ?*Event = if (eventBus.pollingIndex < eventBus.events.items.len) &eventBus.events.items[eventBus.pollingIndex] else null;
             
             if (event != null) {
-                consumer.pollingIndex += 1;
+                if (event.?.*.consume) {
+                    _ = eventBus.events.orderedRemove(0);
+                    return null;
+                }
+                
+                eventBus.pollingIndex += 1;
+            } else {
+                if (eventBus.pollingIndex >= eventBus.events.items.len) {
+                    eventBus.pollingIndex = 0;
+                    return null;
+                }
             }
             
             return event;
         }
         
-        fn destroyConsumer(self: *@This(),consumer: *ConsumerImplementation) void {
+        pub fn append(self: *@This(),eventData: EventData) void {
             const eventBus: *Implementation = @ptrCast(@alignCast(self));
             
-            for (eventBus.consumers.items,0..) |otherConsumerLol,index| {
-                if (otherConsumerLol == consumer) {
-                    eventBus.allocator.destroy(eventBus.consumers.orderedRemove(index));
-                    break;
-                }
-            }
-        }
-        
-        pub fn append(self: *@This(),event: Event) void {
-            const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            eventBus.events.append(eventBus.allocator,event) catch unreachable;
+            eventBus.events.append(eventBus.allocator,.{
+                .data = eventData
+            }) catch unreachable;
         }
     };
 }
@@ -161,7 +98,7 @@ pub const Image: type = struct {
         metadata: Metadata
     };
     
-    fn decodePng(allocator: std.mem.Allocator,imageContents: []const u8,output: struct {pixels: *[]Pixel,metadata: *Metadata}) !void {
+    fn decodePng(allocator: std.mem.Allocator,imageData: []const u8,output: struct {pixels: *[]Pixel,metadata: *Metadata}) !void {
         const ChunkKind: type = enum {
             IHDR, // Header
             IDAT, // Compressed scanlines
@@ -186,23 +123,24 @@ pub const Image: type = struct {
         var bitDepth: u8 = undefined;
         var pixelSize: u8 = undefined;
         
-        {
+        // Parse chunks
+        
             var byteIndex: usize = 8;
             const fieldSize: usize = 4;
             
             while (true) {
                 var chunk = std.mem.zeroes(Chunk);
                 
-                chunk.dataLength = std.mem.readPackedInt(u32,imageContents[byteIndex..byteIndex + fieldSize],0,.big);
+                chunk.dataLength = std.mem.readPackedInt(u32,imageData[byteIndex..byteIndex + fieldSize],0,.big);
                 
                 byteIndex += fieldSize;
                 
-                const typeField: []const u8 = imageContents[byteIndex..byteIndex + fieldSize];
+                const typeField: []const u8 = imageData[byteIndex..byteIndex + fieldSize];
                 
                 var chunkIsRelevant: bool = false;
                 
                 inline for (@typeInfo(ChunkKind).@"enum".fields,0..) |field,fieldIndex| {
-                    if (std.mem.eql(u8,imageContents[byteIndex..byteIndex + fieldSize],field.name)) {
+                    if (std.mem.eql(u8,imageData[byteIndex..byteIndex + fieldSize],field.name)) {
                         chunk.kind = @enumFromInt(fieldIndex);
                         chunkIsRelevant = true;
                         break;
@@ -211,25 +149,27 @@ pub const Image: type = struct {
                 
                 byteIndex += fieldSize;
                 
-                const dataField: []const u8 = imageContents[byteIndex..byteIndex + chunk.dataLength];
+                const dataField: []const u8 = imageData[byteIndex..byteIndex + chunk.dataLength];
                 
-                chunk.data = imageContents[byteIndex..byteIndex + chunk.dataLength];
+                chunk.data = imageData[byteIndex..byteIndex + chunk.dataLength];
                 
                 byteIndex += chunk.dataLength;
                 
-                chunk.checksum = std.mem.readPackedInt(u32,imageContents[byteIndex..byteIndex + fieldSize],0,.big);
+                chunk.checksum = std.mem.readPackedInt(u32,imageData[byteIndex..byteIndex + fieldSize],0,.big);
                 
                 byteIndex += fieldSize;
                 
                 if (chunkIsRelevant) {
-                    {
+                    // Validate checksum
+                    
+                    
                         var hash: std.hash.Crc32 = .init();
                         
                         hash.update(typeField);
                         hash.update(dataField);
                         
                         if (hash.final() != chunk.checksum) return error.CorruptChunkFound;
-                    }
+                    
                     
                     switch (chunk.kind) {
                         .IHDR => {
@@ -250,9 +190,9 @@ pub const Image: type = struct {
                             };
                             
                             bitDepth = chunk.data[8];
-                            pixelSize = channelCount * (bitDepth / 8);
+                            pixelSize = (bitDepth / 8) * channelCount;
                             
-                            output.metadata.size = (bitDepth / 8) * 4 * output.metadata.resolution;
+                            output.metadata.size = @sizeOf(Pixel) * output.metadata.resolution;
                         },
                         .IDAT => compressedScanlines.appendSlice(allocator,chunk.data) catch unreachable,
                         .tEXt => tags.append(allocator,allocator.dupe(u8,chunk.data) catch unreachable) catch unreachable,
@@ -260,7 +200,7 @@ pub const Image: type = struct {
                     }
                 }
             }
-        }
+        
         
         if (tags.items.len > 0) {
             output.metadata.tags = tags.toOwnedSlice(allocator) catch unreachable;
@@ -275,7 +215,7 @@ pub const Image: type = struct {
         
         output.pixels.* = allocator.alloc(Pixel,output.metadata.dimensions[0] * output.metadata.dimensions[1]) catch unreachable;
         
-        const FilterKind: type = enum {
+        const Filter: type = enum {
             None,
             Sub,
             Up,
@@ -295,10 +235,10 @@ pub const Image: type = struct {
         
         for (0..output.metadata.dimensions[1]) |y| {
             const rowStartIndex: usize = y * (scanlineDataLength + 1);
-            const filterType: FilterKind = @enumFromInt(scanlines[rowStartIndex]);
+            const filter: Filter = @enumFromInt(scanlines[rowStartIndex]);
             const scanline: []u8 = scanlines[rowStartIndex + 1..rowStartIndex + 1 + scanlineDataLength];
             
-            switch (filterType) {
+            switch (filter) {
                 .None => {
                     @memcpy(unfilteredScanline,scanline);
                 },
@@ -355,7 +295,7 @@ pub const Image: type = struct {
         }
     }
     
-    pub fn create(allocator: std.mem.Allocator,imageContents: []const u8) !*@This() {
+    pub fn create(allocator: std.mem.Allocator,imageData: []const u8) !*@This() {
         const image: *Implementation = allocator.create(Implementation) catch unreachable;
         
         image.allocator = allocator;
@@ -364,7 +304,7 @@ pub const Image: type = struct {
             var formatAssigned: bool = false;
             
             inline for (formatSignatures,0..) |signature,signatureIndex| {
-                if (std.mem.startsWith(u8,imageContents,signature)) {
+                if (std.mem.startsWith(u8,imageData,signature)) {
                     image.metadata.format = @enumFromInt(@typeInfo(Format).@"enum".fields[signatureIndex].value);
                     formatAssigned = true;
                     break;
@@ -379,7 +319,7 @@ pub const Image: type = struct {
         image.metadata.tags = null;
         
         switch (image.metadata.format) {
-            .Png => try decodePng(allocator,imageContents,.{
+            .Png => try decodePng(allocator,imageData,.{
                 .pixels = &image.pixels,
                 .metadata = &image.metadata
             })
@@ -389,18 +329,21 @@ pub const Image: type = struct {
     }
     
     pub fn createFromFile(allocator: std.mem.Allocator,path: []const u8) !*@This() {
-        const imageContents: []u8 = getValue: {
-            const selfDirectory: std.fs.Dir = try fileSystem.openSelfDirectory(.{});
-            const file: std.fs.File = try selfDirectory.openFile(path,.{
+        const imageData: []u8 = getValue: {
+            var selfDirectory: std.fs.Dir = try fileSystem.openSelfDirectory(.{});
+            defer selfDirectory.close();
+            
+            var file: std.fs.File = try selfDirectory.openFile(path,.{
                 .mode = .read_only
             });
+            defer file.close();
             
             var fileReaderBuffer: [256]u8 = undefined;
             break :getValue try std.Io.Reader.readAlloc(@constCast(&file.reader(&fileReaderBuffer).interface),allocator,(try file.stat()).size);
         };
-        defer allocator.free(imageContents);
+        defer allocator.free(imageData);
         
-        return create(allocator,imageContents);
+        return create(allocator,imageData);
     }
     
     pub fn destroy(self: *@This()) void {
@@ -429,3 +372,147 @@ pub const Image: type = struct {
         return image.metadata;
     }
 };
+
+// var parser: GlbParser = .create(allocator,"../../source/models/roblox.glb");
+// defer parser.destroy();
+// 
+// while (true) {
+//     const element: parser.Element = try parser.next();
+//     
+//     switch (element) {
+//         .scene => {},
+//         .node => {},
+//         .mesh => {},
+//         .camera => {},
+//         .skin => {},
+//         .animation => {},
+//         .end => break;
+//     }
+// }
+
+// pub fn SparseSet(comptime EventData: type) type {
+//     std.debug.assert(std.meta.activeTag(@typeInfo(EventData)) == .@"union");
+//     
+//     return opaque {
+//         const Implementation: type = struct {
+//             allocator: std.mem.Allocator,
+//         };
+//         
+//         pub fn create(allocator: std.mem.Allocator) *@This() {
+//             const eventBus: *Implementation = allocator.create(Implementation) catch unreachable;
+//             
+//             eventBus.allocator = allocator;
+//             
+//             return @ptrCast(eventBus);
+//         }
+//         
+//         pub fn destroy(self: *@This()) void {
+//             const eventBus: *Implementation = @ptrCast(@alignCast(self));
+//             eventBus.allocator.destroy(eventBus);
+//         }
+//     };
+// }
+// 
+// 
+// pub fn SparseSet(
+//     comptime Key: type,
+//     comptime T: type,
+//     comptime keyToIndex: fn (Key) usize,
+// ) type {
+//     return struct {
+//         const Self = @This();
+// 
+//         allocator: std.mem.Allocator,
+// 
+//         dense: std.ArrayList(T),
+//         dense_keys: std.ArrayList(Key),
+// 
+//         sparse: []usize,
+// 
+//         const INVALID: usize = std.math.maxInt(usize);
+// 
+//         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+//             var sparse = try allocator.alloc(usize, capacity);
+//             @memset(sparse, INVALID);
+// 
+//             return .{
+//                 .allocator = allocator,
+//                 .dense = std.ArrayList(T).init(allocator),
+//                 .dense_keys = std.ArrayList(Key).init(allocator),
+//                 .sparse = sparse,
+//             };
+//         }
+// 
+//         pub fn deinit(self: *Self) void {
+//             self.dense.deinit();
+//             self.dense_keys.deinit();
+//             self.allocator.free(self.sparse);
+//         }
+// 
+//         fn ensureCapacity(self: *Self, key: Key) !void {
+//             const index = keyToIndex(key);
+// 
+//             if (index < self.sparse.len) return;
+// 
+//             const old_len = self.sparse.len;
+//             const new_len = index + 1;
+// 
+//             self.sparse = try self.allocator.realloc(self.sparse, new_len);
+//             @memset(self.sparse[old_len..], INVALID);
+//         }
+// 
+//         pub fn has(self: *Self, key: Key) bool {
+//             const index = keyToIndex(key);
+// 
+//             if (index >= self.sparse.len) return false;
+// 
+//             const dense_idx = self.sparse[index];
+//             if (dense_idx == INVALID) return false;
+// 
+//             return self.dense_keys.items[dense_idx] == key;
+//         }
+// 
+//         pub fn get(self: *Self, key: Key) ?*T {
+//             if (!self.has(key)) return null;
+//             return &self.dense.items[self.sparse[keyToIndex(key)]];
+//         }
+// 
+//         pub fn insert(self: *Self, key: Key, value: T) !void {
+//             try self.ensureCapacity(key);
+// 
+//             const index = keyToIndex(key);
+// 
+//             if (self.has(key)) {
+//                 self.dense.items[self.sparse[index]] = value;
+//                 return;
+//             }
+// 
+//             const dense_idx = self.dense.items.len;
+// 
+//             try self.dense.append(value);
+//             try self.dense_keys.append(key);
+// 
+//             self.sparse[index] = dense_idx;
+//         }
+// 
+//         pub fn remove(self: *Self, key: Key) void {
+//             if (!self.has(key)) return;
+// 
+//             const index = keyToIndex(key);
+//             const dense_idx = self.sparse[index];
+//             const last_idx = self.dense.items.len - 1;
+// 
+//             // swap-remove
+//             self.dense.items[dense_idx] = self.dense.items[last_idx];
+//             self.dense_keys.items[dense_idx] = self.dense_keys.items[last_idx];
+// 
+//             const moved_key = self.dense_keys.items[dense_idx];
+//             self.sparse[keyToIndex(moved_key)] = dense_idx;
+// 
+//             _ = self.dense.pop();
+//             _ = self.dense_keys.pop();
+// 
+//             self.sparse[index] = INVALID;
+//         }
+//     };
+// }

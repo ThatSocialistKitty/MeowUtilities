@@ -33,44 +33,31 @@ pub fn print(level: std.log.Level,comptime format: []const u8,arguments: anytype
     
     const linePrefix: []u8 = std.fmt.allocPrint(std.heap.page_allocator,"{s} {s} ",.{timestampSlice,levelSlice}) catch unreachable;
     
-    const outputSize: usize = getValue: {
-        var value: usize = 0;
-        
-        value += formattedMessage.len;
-        
-        for (formattedMessage) |character| {
-            if (std.mem.eql(u8,&.{character},"\n")) {
-                value += linePrefix.len;
-            }
-        }
-        
-        break :getValue value;
-    };
-    
-    var output: []u8 = std.heap.page_allocator.alloc(u8,outputSize) catch unreachable;
-    defer std.heap.page_allocator.free(output);
-    
-    var writeIndex: usize = 0;
-    
-    for (formattedMessage) |character| {
-        if (std.mem.eql(u8,&.{character},"\n")) {
-            output[writeIndex] = '\n';
-            writeIndex += 1;
-            
-            std.mem.copyForwards(u8,output[writeIndex..],linePrefix);
-            writeIndex += linePrefix.len;
-        } else {
-            output[writeIndex] = character;
-            writeIndex += 1;
-        }
-    }
-
     var stdoutBuffer: [512]u8 = undefined;
     var stdoutWriter: std.fs.File.Writer = std.fs.File.stdout().writer(&stdoutBuffer);
     var stdoutWriterInterface: *std.Io.Writer = &stdoutWriter.interface;
     defer stdoutWriterInterface.flush() catch unreachable;
     
-    stdoutWriterInterface.print("{s}{s}{s}{s}\n",.{colorCode,linePrefix,output,colorCodeEnd}) catch unreachable;
+    stdoutWriterInterface.print("{s}{s}",.{colorCode,linePrefix}) catch unreachable;
+    
+    var start: usize = 0;
+    
+    for (formattedMessage,0..) |character,index| {
+        if (character == '\n') {
+            if (index > start) {
+                _ = stdoutWriterInterface.writeAll(formattedMessage[start..index]) catch unreachable;
+            }
+            
+            stdoutWriterInterface.print("\n{s}",.{linePrefix}) catch unreachable;
+            start = index + 1;
+        }
+    }
+    
+    if (start < formattedMessage.len) {
+        _ = stdoutWriterInterface.writeAll(formattedMessage[start..]) catch unreachable;
+    }
+    
+    stdoutWriterInterface.print("{s}\n",.{colorCodeEnd}) catch unreachable;
 }
 
 pub fn debug(comptime format: []const u8,arguments: anytype) void {

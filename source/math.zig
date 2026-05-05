@@ -121,17 +121,16 @@ pub fn ScaleMatrix(factor: f32) Matrix(4,4) {
 pub fn ViewMatrix(eye: @Vector(3,f32), target: @Vector(3,f32), up: @Vector(3,f32)) Matrix(4,4) {
     var matrix: Matrix(4,4) = .init;
 
-    const f = normalize(3,f32,target - eye);
-    const r = normalize(3,f32,cross(3,f32,f,up));
-    const u = cross(3,f32,r,f);
+const f = normalize(3,f32, target - eye);
+const r = normalize(3,f32, cross(3,f32, up, f));
+const u = cross(3,f32, f, r);
 
-    // column-major
-    matrix.data = .{
-        r[0], u[0], -f[0], 0,
-        r[1], u[1], -f[1], 0,
-        r[2], u[2], -f[2], 0,
-        -dot(3,f32,r,eye), -dot(3,f32,u,eye), dot(3,f32,f,eye), 1
-    };
+matrix.data = .{
+    r[0], u[0], -f[0], 0,
+    r[1], u[1], -f[1], 0,
+    r[2], u[2], -f[2], 0,
+    -dot(3,f32,r,eye), -dot(3,f32,u,eye), dot(3,f32,f,eye), 1
+};
 
     return matrix;
 }

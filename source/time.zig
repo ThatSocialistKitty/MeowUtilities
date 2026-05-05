@@ -38,17 +38,17 @@ pub const DatetimeComponents: type = struct {
     hour: u8,
     minute: u8,
     second: u8,
-    millisecond: u16,
+    microsecond: u32,
     dayName: DayName,
     monthName: MonthName
 };
 
-fn isLeapYear(year: i16) bool {
+pub fn isLeapYear(year: i16) bool {
     return (@mod(year,4) == 0 and @mod(year,100) != 0) or @mod(year,400) == 0;
 }
 
 pub fn datetimeComponentsFromTimestamp(timestamp: Timestamp) DatetimeComponents {
-    const timestampSeconds: isize = @divFloor(timestamp,std.time.ms_per_s);
+    const timestampSeconds: isize = @divFloor(timestamp,std.time.us_per_s);
     
     var timestampDays: isize = @divFloor(timestampSeconds,std.time.s_per_day);
     var secondInCurrentDay: u32 = @intCast(timestampSeconds - std.time.s_per_day * timestampDays);
@@ -59,8 +59,8 @@ pub fn datetimeComponentsFromTimestamp(timestamp: Timestamp) DatetimeComponents 
     }
     
     const hour: u8 = @intCast(@divFloor(secondInCurrentDay,std.time.s_per_hour));
-    const minute: u8 = @intCast(@divFloor(@mod(secondInCurrentDay,std.time.s_per_hour),60));
-    const second: u8 = @intCast(@mod(secondInCurrentDay,60));
+    const minute: u8 = @intCast(@divFloor(@mod(secondInCurrentDay,std.time.s_per_hour),std.time.s_per_min));
+    const second: u8 = @intCast(@mod(secondInCurrentDay,std.time.s_per_min));
     
     var year: i16 = 1970;
     
@@ -127,8 +127,8 @@ pub fn datetimeComponentsFromTimestamp(timestamp: Timestamp) DatetimeComponents 
         .hour = hour,
         .minute = minute,
         .second = second,
-        .millisecond = @intCast(timestamp - timestampSeconds * std.time.ms_per_s),
-        .dayName = @enumFromInt(@as(u8,@intCast(@mod((@divFloor(timestamp,std.time.ms_per_s * std.time.s_per_day) + 4),7)))),
+        .microsecond = @intCast(timestamp - timestampSeconds * std.time.us_per_s),
+        .dayName = @enumFromInt(@as(u8,@intCast(@mod((@divFloor(timestamp,std.time.us_per_s * std.time.s_per_day) + 4),7)))),
         .monthName = @enumFromInt(month - 1)
     };
 }
@@ -188,11 +188,11 @@ pub fn getLocalTimestamp() Timestamp {
     var localNowTimeComponents: time.tm = undefined;
     _ = time.localtime_r(&utcNowTime,&localNowTimeComponents);
     
-    const universalTimestamp: Timestamp = std.time.milliTimestamp();
+    const universalTimestamp: Timestamp = std.time.microTimestamp();
     
-    return universalTimestamp + localNowTimeComponents.tm_gmtoff * std.time.ms_per_s;
+    return universalTimestamp + localNowTimeComponents.tm_gmtoff * std.time.us_per_s;
 }
 
 pub fn getUniversalTimestamp() Timestamp {
-    return std.time.milliTimestamp();
+    return std.time.microTimestamp();
 }
