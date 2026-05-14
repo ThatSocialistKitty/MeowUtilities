@@ -8,49 +8,38 @@ pub fn EventBus(comptime EventData: type) type {
     std.debug.assert(std.meta.activeTag(@typeInfo(EventData)) == .@"union");
     
     return struct {
+        allocator: std.mem.Allocator = undefined,
+        events: std.ArrayList(Event) = .empty,
+        pollingIndex: usize = 0,
+        
         pub const Event: type = struct {
             consume: bool = false,
             data: EventData
         };
         
-        const Implementation: type = struct {
-            allocator: std.mem.Allocator,
-            events: std.ArrayList(Event),
-            pollingIndex: usize
-        };
-        
-        pub fn create(allocator: std.mem.Allocator) *@This() {
-            const eventBus: *Implementation = allocator.create(Implementation) catch unreachable;
-            
-            eventBus.allocator = allocator;
-            eventBus.events = .empty;
-            eventBus.pollingIndex = 0;
-            
-            return @ptrCast(eventBus);
+        pub fn create(allocator: std.mem.Allocator) @This() {
+            var self: @This() = .{};
+            self.allocator = allocator;
+            return self;
         }
         
         pub fn destroy(self: *@This()) void {
-            const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            
-            eventBus.events.deinit(eventBus.allocator);
-            eventBus.allocator.destroy(eventBus);
+            self.events.deinit(self.allocator);
         }
         
         pub fn poll(self: *@This()) ?*Event {
-            const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            
-            const event: ?*Event = if (eventBus.pollingIndex < eventBus.events.items.len) &eventBus.events.items[eventBus.pollingIndex] else null;
+            const event: ?*Event = if (self.pollingIndex < self.events.items.len) &self.events.items[self.pollingIndex] else null;
             
             if (event != null) {
                 if (event.?.*.consume) {
-                    _ = eventBus.events.orderedRemove(0);
+                    _ = self.events.orderedRemove(0);
                     return null;
                 }
                 
-                eventBus.pollingIndex += 1;
+                self.pollingIndex += 1;
             } else {
-                if (eventBus.pollingIndex >= eventBus.events.items.len) {
-                    eventBus.pollingIndex = 0;
+                if (self.pollingIndex >= self.events.items.len) {
+                    self.pollingIndex = 0;
                     return null;
                 }
             }
@@ -59,9 +48,7 @@ pub fn EventBus(comptime EventData: type) type {
         }
         
         pub fn append(self: *@This(),eventData: EventData) void {
-            const eventBus: *Implementation = @ptrCast(@alignCast(self));
-            
-            eventBus.events.append(eventBus.allocator,.{
+            self.events.append(self.allocator,.{
                 .data = eventData
             }) catch unreachable;
         }
@@ -69,20 +56,16 @@ pub fn EventBus(comptime EventData: type) type {
 }
 
 pub const Image: type = struct {
-    const Format: type = enum {
-        Png
-    };
-    
-    const formatSignatures: []const []const u8 = &.{
-        &.{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}
-    };
+    allocator: std.mem.Allocator = undefined,
+    pixels: []Pixel = undefined,
+    metadata: Metadata = .{},
     
     pub const Metadata: type = struct {
-        format: Format,
-        dimensions: [2]u32,
-        resolution: u32,
-        size: usize,
-        tags: ?[]const []const u8
+        format: Format = undefined,
+        dimensions: [2]u32 = undefined,
+        resolution: u32 = undefined,
+        size: usize = undefined,
+        tags: ?[]const []const u8 = null
     };
     
     const Pixel: type = struct {
@@ -92,18 +75,20 @@ pub const Image: type = struct {
         alpha: u8
     };
     
-    const Implementation: type = struct {
-        allocator: std.mem.Allocator,
-        pixels: []Pixel,
-        metadata: Metadata
+    const Format: type = enum {
+        Png
     };
     
-    fn decodePng(allocator: std.mem.Allocator,imageData: []const u8,output: struct {pixels: *[]Pixel,metadata: *Metadata}) !void {
+    const formatSignatures: []const []const u8 = &.{
+        &.{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}
+    };
+    
+    fn decodePng(allocator: std.mem.Allocator,fileData: []const u8,output: struct {pixels: *[]Pixel,metadata: *Metadata}) !void {
         const ChunkKind: type = enum {
             IHDR, // Header
             IDAT, // Compressed scanlines
             tEXt, // Tags
-            IEND // End of image
+            IEND // End
         };
         
         const Chunk: type = struct {
@@ -125,39 +110,33 @@ pub const Image: type = struct {
         
         // Parse chunks
         
-            var byteIndex: usize = 8;
-            const fieldSize: usize = 4;
+        
+            var fileDataReader: std.Io.Reader = .fixed(fileData);
+            
+            fileDataReader.toss(8);
             
             while (true) {
                 var chunk = std.mem.zeroes(Chunk);
                 
-                chunk.dataLength = std.mem.readPackedInt(u32,imageData[byteIndex..byteIndex + fieldSize],0,.big);
+                chunk.dataLength = try fileDataReader.takeInt(u32,.big);
                 
-                byteIndex += fieldSize;
-                
-                const typeField: []const u8 = imageData[byteIndex..byteIndex + fieldSize];
+                var typeField: []const u8 = try fileDataReader.takeArray(4);
                 
                 var chunkIsRelevant: bool = false;
                 
                 inline for (@typeInfo(ChunkKind).@"enum".fields,0..) |field,fieldIndex| {
-                    if (std.mem.eql(u8,imageData[byteIndex..byteIndex + fieldSize],field.name)) {
+                    if (std.mem.eql(u8,typeField[0..],field.name)) {
                         chunk.kind = @enumFromInt(fieldIndex);
                         chunkIsRelevant = true;
                         break;
                     }
                 }
                 
-                byteIndex += fieldSize;
+                const dataField = try fileDataReader.take(chunk.dataLength);
                 
-                const dataField: []const u8 = imageData[byteIndex..byteIndex + chunk.dataLength];
+                chunk.data = dataField;
                 
-                chunk.data = imageData[byteIndex..byteIndex + chunk.dataLength];
-                
-                byteIndex += chunk.dataLength;
-                
-                chunk.checksum = std.mem.readPackedInt(u32,imageData[byteIndex..byteIndex + fieldSize],0,.big);
-                
-                byteIndex += fieldSize;
+                chunk.checksum = try fileDataReader.takeInt(u32,.big);
                 
                 if (chunkIsRelevant) {
                     // Validate checksum
@@ -165,8 +144,8 @@ pub const Image: type = struct {
                     
                         var hash: std.hash.Crc32 = .init();
                         
-                        hash.update(typeField);
-                        hash.update(dataField);
+                        hash.update(typeField[0..]);
+                        hash.update(dataField[0..]);
                         
                         if (hash.final() != chunk.checksum) return error.CorruptChunkFound;
                     
@@ -174,12 +153,9 @@ pub const Image: type = struct {
                     switch (chunk.kind) {
                         .IHDR => {
                             output.metadata.dimensions = .{
-                                std.mem.readPackedInt(u32,chunk.data[0..fieldSize],0,.big),
-                                std.mem.readPackedInt(u32,chunk.data[fieldSize..fieldSize * 2],0,.big)
+                                std.mem.readPackedInt(u32,chunk.data[0..4],0,.big),
+                                std.mem.readPackedInt(u32,chunk.data[4..8],0,.big)
                             };
-                            
-                            output.metadata.dimensions[0] = output.metadata.dimensions[0];
-                            output.metadata.dimensions[1] = output.metadata.dimensions[1];
                             
                             output.metadata.resolution = output.metadata.dimensions[0] * output.metadata.dimensions[1];
                             
@@ -295,17 +271,19 @@ pub const Image: type = struct {
         }
     }
     
-    pub fn create(allocator: std.mem.Allocator,imageData: []const u8) !*@This() {
-        const image: *Implementation = allocator.create(Implementation) catch unreachable;
+    pub fn create(allocator: std.mem.Allocator,fileData: []const u8) !@This() {
+        var self: @This() = .{};
         
-        image.allocator = allocator;
+        self.allocator = allocator;
         
-        {
+        // Select format
+        
+        
             var formatAssigned: bool = false;
             
             inline for (formatSignatures,0..) |signature,signatureIndex| {
-                if (std.mem.startsWith(u8,imageData,signature)) {
-                    image.metadata.format = @enumFromInt(@typeInfo(Format).@"enum".fields[signatureIndex].value);
+                if (std.mem.startsWith(u8,fileData,signature)) {
+                    self.metadata.format = @enumFromInt(@typeInfo(Format).@"enum".fields[signatureIndex].value);
                     formatAssigned = true;
                     break;
                 }
@@ -314,205 +292,56 @@ pub const Image: type = struct {
             if (!formatAssigned) {
                 return error.UnsupportedFormat;
             }
-        }
         
-        image.metadata.tags = null;
         
-        switch (image.metadata.format) {
-            .Png => try decodePng(allocator,imageData,.{
-                .pixels = &image.pixels,
-                .metadata = &image.metadata
+        switch (self.metadata.format) {
+            .Png => try decodePng(allocator,fileData,.{
+                .pixels = &self.pixels,
+                .metadata = &self.metadata
             })
         }
         
-        return @ptrCast(image);
+        return self;
     }
     
-    pub fn createFromFile(allocator: std.mem.Allocator,path: []const u8) !*@This() {
-        const imageData: []u8 = getValue: {
-            var selfDirectory: std.fs.Dir = try fileSystem.openSelfDirectory(.{});
-            defer selfDirectory.close();
-            
-            var file: std.fs.File = try selfDirectory.openFile(path,.{
-                .mode = .read_only
-            });
-            defer file.close();
-            
-            var fileReaderBuffer: [256]u8 = undefined;
-            break :getValue try std.Io.Reader.readAlloc(@constCast(&file.reader(&fileReaderBuffer).interface),allocator,(try file.stat()).size);
-        };
-        defer allocator.free(imageData);
+    pub fn createFromFile(allocator: std.mem.Allocator,io: std.Io,path: []const u8) !@This() {
+        const executableDirectory: std.Io.Dir = try fileSystem.openExecutableDirectory(io,.{});
+        defer executableDirectory.close(io);
         
-        return create(allocator,imageData);
+        const fileContents: []u8 = try executableDirectory.readFileAlloc(io,path,allocator,.unlimited);
+        defer allocator.free(fileContents);
+        
+        return try .create(allocator,fileContents);
     }
     
     pub fn destroy(self: *@This()) void {
-        const image: *Implementation = @ptrCast(@alignCast(self));
+        self.allocator.free(self.pixels);
         
-        image.allocator.free(image.pixels);
-        
-        if (image.metadata.tags != null) {
-            for (image.metadata.tags.?) |tag| {
-                image.allocator.free(tag);
+        if (self.metadata.tags != null) {
+            for (self.metadata.tags.?) |tag| {
+                self.allocator.free(tag);
             }
             
-            image.allocator.free(image.metadata.tags.?);
+            self.allocator.free(self.metadata.tags.?);
         }
-        
-        image.allocator.destroy(image);
     }
     
-    pub fn getPixels(self: *@This()) []const Pixel {
-        const image: *Implementation = @ptrCast(@alignCast(self));
-        return image.pixels;
+    pub fn getPixels(self: @This()) []const Pixel {
+        return self.pixels;
     }
     
-    pub fn getMetadata(self: *@This()) Metadata {
-        const image: *Implementation = @ptrCast(@alignCast(self));
-        return image.metadata;
+    pub fn getMetadata(self: @This()) Metadata {
+        return self.metadata;
     }
 };
 
-// var parser: GlbParser = .create(allocator,"../../source/models/roblox.glb");
-// defer parser.destroy();
-// 
-// while (true) {
-//     const element: parser.Element = try parser.next();
-//     
-//     switch (element) {
-//         .scene => {},
-//         .node => {},
-//         .mesh => {},
-//         .camera => {},
-//         .skin => {},
-//         .animation => {},
-//         .end => break;
-//     }
-// }
-
-// pub fn SparseSet(comptime EventData: type) type {
-//     std.debug.assert(std.meta.activeTag(@typeInfo(EventData)) == .@"union");
-//     
-//     return opaque {
-//         const Implementation: type = struct {
-//             allocator: std.mem.Allocator,
-//         };
-//         
-//         pub fn create(allocator: std.mem.Allocator) *@This() {
-//             const eventBus: *Implementation = allocator.create(Implementation) catch unreachable;
-//             
-//             eventBus.allocator = allocator;
-//             
-//             return @ptrCast(eventBus);
-//         }
-//         
-//         pub fn destroy(self: *@This()) void {
-//             const eventBus: *Implementation = @ptrCast(@alignCast(self));
-//             eventBus.allocator.destroy(eventBus);
-//         }
-//     };
-// }
-// 
-// 
-// pub fn SparseSet(
-//     comptime Key: type,
-//     comptime T: type,
-//     comptime keyToIndex: fn (Key) usize,
-// ) type {
-//     return struct {
-//         const Self = @This();
-// 
-//         allocator: std.mem.Allocator,
-// 
-//         dense: std.ArrayList(T),
-//         dense_keys: std.ArrayList(Key),
-// 
-//         sparse: []usize,
-// 
-//         const INVALID: usize = std.math.maxInt(usize);
-// 
-//         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
-//             var sparse = try allocator.alloc(usize, capacity);
-//             @memset(sparse, INVALID);
-// 
-//             return .{
-//                 .allocator = allocator,
-//                 .dense = std.ArrayList(T).init(allocator),
-//                 .dense_keys = std.ArrayList(Key).init(allocator),
-//                 .sparse = sparse,
-//             };
-//         }
-// 
-//         pub fn deinit(self: *Self) void {
-//             self.dense.deinit();
-//             self.dense_keys.deinit();
-//             self.allocator.free(self.sparse);
-//         }
-// 
-//         fn ensureCapacity(self: *Self, key: Key) !void {
-//             const index = keyToIndex(key);
-// 
-//             if (index < self.sparse.len) return;
-// 
-//             const old_len = self.sparse.len;
-//             const new_len = index + 1;
-// 
-//             self.sparse = try self.allocator.realloc(self.sparse, new_len);
-//             @memset(self.sparse[old_len..], INVALID);
-//         }
-// 
-//         pub fn has(self: *Self, key: Key) bool {
-//             const index = keyToIndex(key);
-// 
-//             if (index >= self.sparse.len) return false;
-// 
-//             const dense_idx = self.sparse[index];
-//             if (dense_idx == INVALID) return false;
-// 
-//             return self.dense_keys.items[dense_idx] == key;
-//         }
-// 
-//         pub fn get(self: *Self, key: Key) ?*T {
-//             if (!self.has(key)) return null;
-//             return &self.dense.items[self.sparse[keyToIndex(key)]];
-//         }
-// 
-//         pub fn insert(self: *Self, key: Key, value: T) !void {
-//             try self.ensureCapacity(key);
-// 
-//             const index = keyToIndex(key);
-// 
-//             if (self.has(key)) {
-//                 self.dense.items[self.sparse[index]] = value;
-//                 return;
-//             }
-// 
-//             const dense_idx = self.dense.items.len;
-// 
-//             try self.dense.append(value);
-//             try self.dense_keys.append(key);
-// 
-//             self.sparse[index] = dense_idx;
-//         }
-// 
-//         pub fn remove(self: *Self, key: Key) void {
-//             if (!self.has(key)) return;
-// 
-//             const index = keyToIndex(key);
-//             const dense_idx = self.sparse[index];
-//             const last_idx = self.dense.items.len - 1;
-// 
-//             // swap-remove
-//             self.dense.items[dense_idx] = self.dense.items[last_idx];
-//             self.dense_keys.items[dense_idx] = self.dense_keys.items[last_idx];
-// 
-//             const moved_key = self.dense_keys.items[dense_idx];
-//             self.sparse[keyToIndex(moved_key)] = dense_idx;
-// 
-//             _ = self.dense.pop();
-//             _ = self.dense_keys.pop();
-// 
-//             self.sparse[index] = INVALID;
-//         }
-//     };
-// }
+pub const GlbParser: type = struct {
+    pub const Node: type = undefined;
+    
+    pub const Scene: type = []Node;
+    
+    pub fn create(allocator: std.mem.Allocator,path: []const u8) @This() {
+        _ = allocator; _ = path;
+        return .{};
+    }
+};

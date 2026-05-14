@@ -33,7 +33,7 @@ pub fn Matrix(comptime width: usize, comptime height: usize) type {
     if (width < 2 or height < 2 or width > 4 or height > 4) @panic("Only matrices 2x2..4x4 are allowed");
 
     return struct {
-        data: @Vector(width * height, f32) align(16),
+        data: [width * height]f32 align(16),
 
         pub const init: @This() = .{
             .data = std.mem.zeroes(@Vector(width * height, f32))
@@ -64,7 +64,7 @@ pub fn Matrix(comptime width: usize, comptime height: usize) type {
         }
 
         // ---------------- Column-major translation ----------------
-        pub fn translate(self: @This(), position: @Vector(3,f32)) @This() {
+        pub fn translate(self: @This(), position: [3]f32) @This() {
             var result = self;
             // last column indices: col 3
             result.data[0 + 3*4] += position[0]; // X
@@ -118,10 +118,10 @@ pub fn ScaleMatrix(factor: f32) Matrix(4,4) {
 }
 
 // ---------------- Column-major View Matrix ----------------
-pub fn ViewMatrix(eye: @Vector(3,f32), target: @Vector(3,f32), up: @Vector(3,f32)) Matrix(4,4) {
+pub fn ViewMatrix(eye: [3]f32, target: [3]f32, up: [3]f32) Matrix(4,4) {
     var matrix: Matrix(4,4) = .init;
 
-const f = normalize(3,f32, target - eye);
+const f = normalize(3,f32, .{target[0] - eye[0],target[1] - eye[1],target[2] - eye[2]});
 const r = normalize(3,f32, cross(3,f32, up, f));
 const u = cross(3,f32, f, r);
 
@@ -150,23 +150,23 @@ pub fn ProjectionMatrix(fov: f32, aspectRatio: f32, near: f32, far: f32) Matrix(
 }
 
 // ---------------- Vector helpers ----------------
-pub fn dot(comptime N: usize, T: type, vector1: @Vector(N,T), vector2: @Vector(N,T)) T {
+pub fn dot(comptime N: usize, T: type, vector1: [N]T, vector2: [N]T) T {
     var sum: T = 0;
     for (0..N) |i| sum += vector1[i]*vector2[i];
     return sum;
 }
 
-pub fn normalize(comptime N: usize, T: type, v: @Vector(N,T)) @Vector(N,T) {
+pub fn normalize(comptime N: usize, T: type, v: [N]T) [N]T {
     var length_sq: T = 0;
     for (0..N) |i| length_sq += v[i]*v[i];
     const length = @sqrt(length_sq);
     if (length==0) return v;
-    var result: @Vector(N,T) = v;
+    var result: [N]T = v;
     for (0..N) |i| result[i] = v[i]/length;
     return result;
 }
 
-pub fn cross(comptime N: usize, T: type, a: @Vector(N,T), b: @Vector(N,T)) @Vector(N,T) {
+pub fn cross(comptime N: usize, T: type, a: [N]T, b: [N]T) [N]T {
     return .{
         a[1]*b[2]-a[2]*b[1],
         a[2]*b[0]-a[0]*b[2],

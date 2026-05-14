@@ -2,7 +2,7 @@ const std: type = @import("std");
 const builtin: type = @import("builtin");
 const time: type = @import("time.zig");
 
-pub fn print(level: std.log.Level,comptime format: []const u8,arguments: anytype) void {
+pub fn print(io: std.Io,level: std.log.Level,comptime format: []const u8,arguments: anytype) void {
     var levelSlice: []const u8 = undefined;
     var colorCode: []const u8 = undefined;
     const colorCodeEnd: []const u8 = "\x1b[0m";
@@ -27,14 +27,14 @@ pub fn print(level: std.log.Level,comptime format: []const u8,arguments: anytype
     }
     
     var timestampBuffer: time.FormattedTimestampBuffer = undefined;
-    const timestampSlice: []const u8 = time.formatTime(&timestampBuffer,time.getLocalTimestamp());
+    const timestampSlice: []const u8 = time.formatTime(&timestampBuffer,time.getLocalTimestamp(io));
     
     const formattedMessage: []const u8 = std.fmt.allocPrint(std.heap.page_allocator,format,arguments) catch unreachable;
     
     const linePrefix: []u8 = std.fmt.allocPrint(std.heap.page_allocator,"{s} {s} ",.{timestampSlice,levelSlice}) catch unreachable;
     
     var stdoutBuffer: [512]u8 = undefined;
-    var stdoutWriter: std.fs.File.Writer = std.fs.File.stdout().writer(&stdoutBuffer);
+    var stdoutWriter: std.Io.File.Writer = std.Io.File.stdout().writer(io,&stdoutBuffer);
     var stdoutWriterInterface: *std.Io.Writer = &stdoutWriter.interface;
     defer stdoutWriterInterface.flush() catch unreachable;
     
@@ -60,20 +60,20 @@ pub fn print(level: std.log.Level,comptime format: []const u8,arguments: anytype
     stdoutWriterInterface.print("{s}\n",.{colorCodeEnd}) catch unreachable;
 }
 
-pub fn debug(comptime format: []const u8,arguments: anytype) void {
+pub fn debug(io: std.Io,comptime format: []const u8,arguments: anytype) void {
     if (builtin.mode == .Debug) {
-        print(.debug,format,arguments);
+        print(io,.debug,format,arguments);
     }
 }
 
-pub fn info(comptime format: []const u8,arguments: anytype) void {
-    print(.info,format,arguments);
+pub fn info(io: std.Io,comptime format: []const u8,arguments: anytype) void {
+    print(io,.info,format,arguments);
 }
 
-pub fn warn(comptime format: []const u8,arguments: anytype) void {
-    print(.warn,format,arguments);
+pub fn warn(io: std.Io,comptime format: []const u8,arguments: anytype) void {
+    print(io,.warn,format,arguments);
 }
 
-pub fn err(comptime format: []const u8,arguments: anytype) void {
-    print(.err,format,arguments);
+pub fn err(io: std.Io,comptime format: []const u8,arguments: anytype) void {
+    print(io,.err,format,arguments);
 }

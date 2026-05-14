@@ -1,9 +1,10 @@
 const std: type = @import("std");
+const builtin: type = @import("builtin");
 const time: type = @cImport({
     @cInclude("time.h");
 });
 
-pub const Timestamp: type = i64;
+pub const Timestamp: type = std.Io.Timestamp;
 pub const FormattedTimestampBuffer: type = [32]u8;
 
 pub const DayName: type = enum {
@@ -48,7 +49,7 @@ pub fn isLeapYear(year: i16) bool {
 }
 
 pub fn datetimeComponentsFromTimestamp(timestamp: Timestamp) DatetimeComponents {
-    const timestampSeconds: isize = @divFloor(timestamp,std.time.us_per_s);
+    const timestampSeconds: isize = timestamp.toSeconds();
     
     var timestampDays: isize = @divFloor(timestampSeconds,std.time.s_per_day);
     var secondInCurrentDay: u32 = @intCast(timestampSeconds - std.time.s_per_day * timestampDays);
@@ -127,8 +128,8 @@ pub fn datetimeComponentsFromTimestamp(timestamp: Timestamp) DatetimeComponents 
         .hour = hour,
         .minute = minute,
         .second = second,
-        .microsecond = @intCast(timestamp - timestampSeconds * std.time.us_per_s),
-        .dayName = @enumFromInt(@as(u8,@intCast(@mod((@divFloor(timestamp,std.time.us_per_s * std.time.s_per_day) + 4),7)))),
+        .microsecond = @intCast(@mod(timestamp.toMicroseconds(),std.time.us_per_s)),
+        .dayName = @enumFromInt(@as(u8,@intCast(@mod((@divFloor(timestamp.toSeconds(),std.time.us_per_s * std.time.s_per_day) + 4),7)))),
         .monthName = @enumFromInt(month - 1)
     };
 }
@@ -138,10 +139,9 @@ pub fn formatDatetime(buffer: *FormattedTimestampBuffer,timestamp: Timestamp) []
     
     return std.fmt.bufPrint(
         buffer,
-        "{s}{:04}-{:02}-{:02} @ {:02}:{:02}:{:02}",
+        "{:04}-{:02}-{:02} @ {:02}:{:02}:{:02}",
         .{
-            if (datetimeComponents.year < 0) "-" else "",
-            @abs(datetimeComponents.year),
+            datetimeComponents.year,
             datetimeComponents.month,
             datetimeComponents.day,
             datetimeComponents.hour,
@@ -182,17 +182,23 @@ pub fn formatTime(buffer: *FormattedTimestampBuffer,timestamp: Timestamp) []u8 {
 
 // TODO: Make cross-platform
 
-pub fn getLocalTimestamp() Timestamp {
-    const utcNowTime: time.time_t = time.time(null);
+pub fn getLocalTimestamp(io: std.Io) Timestamp {
+    const universalTimestamp: Timestamp = getUniversalTimestamp(io);
+    const timezoneOffset: i64 = getValue: switch (builtin.target.os.tag) {
+        .linux => {
+            const utcNowTime: time.time_t = time.time(null);
+            
+            var localNowTimeComponents: time.tm = undefined;
+            _ = time.localtime_r(&utcNowTime,&localNowTimeComponents);
+            
+            break :getValue @intCast(localNowTimeComponents.tm_gmtoff);
+        },
+        else => return .zero
+    };
     
-    var localNowTimeComponents: time.tm = undefined;
-    _ = time.localtime_r(&utcNowTime,&localNowTimeComponents);
-    
-    const universalTimestamp: Timestamp = std.time.microTimestamp();
-    
-    return universalTimestamp + localNowTimeComponents.tm_gmtoff * std.time.us_per_s;
+    return .fromNanoseconds(universalTimestamp.toNanoseconds() + timezoneOffset * std.time.ns_per_s);
 }
 
-pub fn getUniversalTimestamp() Timestamp {
-    return std.time.microTimestamp();
+pub fn getUniversalTimestamp(io: std.Io) Timestamp {
+    return .now(io,.real);
 }

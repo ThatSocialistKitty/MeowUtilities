@@ -1,11 +1,11 @@
 const std: type = @import("std");
 
-pub fn build(b: *std.Build) void {
-    const target: std.Build.ResolvedTarget = b.standardTargetOptions(.{});
-    const optimize: std.builtin.OptimizeMode = b.standardOptimizeOption(.{});
+pub fn build(builder: *std.Build) void {
+    const target: std.Build.ResolvedTarget = builder.standardTargetOptions(.{});
+    const optimize: std.builtin.OptimizeMode = builder.standardOptimizeOption(.{});
 
-    const mainModule: *std.Build.Module = b.addModule("main",.{
-        .root_source_file = b.path("source/main.zig"),
+    const mainModule: *std.Build.Module = builder.addModule("main",.{
+        .root_source_file = builder.path("source/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -16,9 +16,9 @@ pub fn build(b: *std.Build) void {
     
     // TODO: Get dis working :3
     
-    // const dependenciesLibrary: *std.Build.Step.Compile = b.addLibrary(.{
+    // const dependenciesLibrary: *std.Build.Step.Compile = builder.addLibrary(.{
     //     .name = "dependencies",
-    //     .root_module = b.createModule(.{
+    //     .root_module = builder.createModule(.{
     //         .target = target,
     //         .optimize = optimize,
     //         .link_libc = true,
@@ -27,10 +27,10 @@ pub fn build(b: *std.Build) void {
     // });
     // 
     // {
-    //     dependenciesLibrary.addIncludePath(b.path("dependencies/zlib-ng"));
+    //     dependenciesLibrary.addIncludePath(builder.path("dependencies/zlib-ng"));
     //     
     //     dependenciesLibrary.root_module.addCSourceFiles(.{
-    //         .root = b.path("dependencies/zlib-ng"),
+    //         .root = builder.path("dependencies/zlib-ng"),
     //         .files = &.{
     //             "adler32.c",
     //             "crc32.c",
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     //         }
     //     });
     //     
-    //     dependenciesLibrary.installHeadersDirectory(b.path("dependencies/zlib-ng"),"",.{
+    //     dependenciesLibrary.installHeadersDirectory(builder.path("dependencies/zlib-ng"),"",.{
     //         .include_extensions = &.{
     //             "zconf.h",
     //             "zlib.h"
